@@ -1,10 +1,10 @@
 from rest_framework import serializers
-from .models import User, Pit, Table, Player, HourlyRundown
+from .models import CustomUser, Pit, Table, Player, HourlyRundown
 
 # 🔹 User Serializer (Handles Supervisors & PIT Bosses)
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
-        model = User
+        model = CustomUser  # Ensure this uses your custom user model
         fields = ['id', 'username', 'email', 'role']
 
 # 🔹 PIT Serializer (Created by Supervisors)
@@ -33,9 +33,10 @@ class PlayerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Player
         fields = [
-            'id', 'name', 'table', 'buy_in', 'cash_out', 'bet_amount', 'average_bet',
+            'id', 'name', 'table', 'buy_in', 'cash_out', 'average_bet',
             'session_start', 'session_end', 'reward_points', 'description', 'entered_by', 'play_time'
         ]
+        # Note: 'bet_amount' was removed because it doesn't exist in the model
 
     def get_play_time(self, obj):
         return obj.calculate_play_time()  # Returns session duration in minutes

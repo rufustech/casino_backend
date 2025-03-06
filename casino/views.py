@@ -1,170 +1,88 @@
+from rest_framework import viewsets, permissions
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
 from django.contrib.auth import get_user_model
-from .models import Pit, Table, Player
-from .serializers import PitSerializer, TableSerializer, PlayerSerializer
+from rest_framework.permissions import IsAdminUser
+from rest_framework.response import Response
+from django.shortcuts import get_object_or_404
+from .models import Pit, Table, Player, HourlyRundown
+from .serializers import PitSerializer, TableSerializer, PlayerSerializer, HourlyRundownSerializer, UserSerializer  
+
 
 User = get_user_model()
 
-# 🔹 Create a PIT (Only Supervisors)
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def create_pit(request):
-    if request.user.role != 'supervisor':
-        return Response({"error": "Permission denied"}, status=403)
+@permission_classes([IsAdminUser])  # Only Admins can create Supervisors
+def register_supervisor(request):
+    """Registers a new Supervisor user (Only Admins can do this)"""
+    username = request.data.get("username")
+    password = request.data.get("password")
+    email = request.data.get("email")
 
-    name = request.data.get("name")
-    pit = Pit.objects.create(name=name, created_by=request.user)
-    return Response(PitSerializer(pit).data)
+    if not (username and password and email):
+        return Response({"error": "All fields are required"}, status=400)
 
-# 🔹 Create a Table (Only Supervisors)
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def create_table(request):
-    if request.user.role != 'supervisor':
-        return Response({"error": "Permission denied"}, status=403)
+    user = User.objects.create_user(username=username, email=email, password=password)
+    user.role = "supervisor"  # Assign Supervisor role
+    user.save()
 
-    pit_id = request.data.get("pit_id")
-    name = request.data.get("name")
-    game_type = request.data.get("game_type")
+    return Response({"message": "Supervisor registered successfully", "user": UserSerializer(user).data}, status=201)
+# 🔹 Custom Permission Classes
+class IsSupervisor(permissions.BasePermission):
+    def has_permission(self, request, view):
+        return request.user.is_authenticated and request.user.role == 'supervisor'
 
-    try:
-        pit = Pit.objects.get(id=pit_id)
-        table = Table.objects.create(name=name, game_type=game_type, pit=pit, created_by=request.user)
-        return Response(TableSerializer(table).data)
-    except Pit.DoesNotExist:
-        return Response({"error": "PIT not found"}, status=404)
+class IsPitBoss(permissions.BasePermission):
+    def has_permission(self, request, view):
+        return request.user.is_authenticated and request.user.role == 'pit_boss'
 
-# 🔹 Add Player (Only PIT Bosses)
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def add_player(request):
-    if request.user.role != 'pit_boss':
-        return Response({"error": "Permission denied"}, status=403)
+# 🔹 PIT ViewSet (CRUD for Supervisors)
+class PitViewSet(viewsets.ModelViewSet):
+    queryset = Pit.objects.all()
+    serializer_class = PitSerializer
+    permission_classes = [IsSupervisor]
 
-    serializer = PlayerSerializer(data=request.data)
-    if serializer.is_valid():
-        serializer.save(entered_by=request.user)
-        return Response(serializer.data, status=201)
-    return Response(serializer.errors, status=400)
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
 
-# 🔹 Update Buy-in & Cash-out (Only PIT Bosses)
-@api_view(['PATCH'])
-@permission_classes([IsAuthenticated])
-def update_player_funds(request, player_id):
-    if request.user.role != 'pit_boss':
-        return Response({"error": "Permission denied"}, status=403)
+# 🔹 Table ViewSet (CRUD for Supervisors)
+class TableViewSet(viewsets.ModelViewSet):
+    queryset = Table.objects.all()
+    serializer_class = TableSerializer
+    permission_classes = [IsSupervisor]
 
-    try:
-        player = Player.objects.get(id=player_id)
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+# 🔹 Player ViewSet (CRUD for PIT Bosses)
+class PlayerViewSet(viewsets.ModelViewSet):
+    queryset = Player.objects.all()
+    serializer_class = PlayerSerializer
+    permission_classes = [IsPitBoss]
+
+    def perform_create(self, serializer):
+        serializer.save(entered_by=self.request.user)
+
+    def partial_update(self, request, *args, **kwargs):
+        """Handle Buy-in & Cash-out Updates"""
+        player = get_object_or_404(Player, pk=kwargs['pk'])
         buy_in = request.data.get("buy_in")
         cash_out = request.data.get("cash_out")
 
         if buy_in is not None:
-            player.buy_in += float(buy_in)  # Incremental buy-in update
+            player.buy_in += float(buy_in)
         if cash_out is not None:
             player.cash_out = float(cash_out)
 
         player.save()
         return Response(PlayerSerializer(player).data)
-    except Player.DoesNotExist:
-        return Response({"error": "Player not found"}, status=404)
-    
-    # 🔹 Add Hourly Rundown (Only PIT Bosses)
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def add_hourly_rundown(request):
-    if request.user.role != 'pit_boss':
-        return Response({"error": "Permission denied"}, status=403)
 
-    table_id = request.data.get("table_id")
-    float_amount = request.data.get("float_amount")
-    drop_amount = request.data.get("drop_amount")
+# 🔹 Hourly Rundown ViewSet (CRUD for PIT Bosses)
+class HourlyRundownViewSet(viewsets.ModelViewSet):
+    queryset = HourlyRundown.objects.all().order_by('-timestamp')
+    serializer_class = HourlyRundownSerializer
+    permission_classes = [IsPitBoss]
 
-    try:
-        table = Table.objects.get(id=table_id)
-        rundown = HourlyRundown.objects.create(
-            table=table,
-            float_amount=float(float_amount),
-            drop_amount=float(drop_amount),
-            entered_by=request.user
-        )
-        rundown.calculate_profit_loss()  # Update Profit/Loss
-        return Response({"message": "Hourly Rundown added successfully", "data": {
-            "table": table.name,
-            "float_amount": rundown.float_amount,
-            "drop_amount": rundown.drop_amount,
-            "profit_loss": rundown.profit_loss
-        }}, status=201)
-    except Table.DoesNotExist:
-        return Response({"error": "Table not found"}, status=404)
-
-# 🔹 Get Real-Time Rundowns (Supervisors)
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def get_rundowns(request):
-    if request.user.role != 'supervisor':
-        return Response({"error": "Permission denied"}, status=403)
-
-    rundowns = HourlyRundown.objects.all().order_by('-timestamp')  # Latest first
-    data = [{
-        "table": rundown.table.name,
-        "timestamp": rundown.timestamp.strftime('%Y-%m-%d %H:%M'),
-        "float_amount": rundown.float_amount,
-        "drop_amount": rundown.drop_amount,
-        "profit_loss": rundown.profit_loss,
-        "entered_by": rundown.entered_by.username
-    } for rundown in rundowns]
-
-    return Response({"rundowns": data}, status=200)
-
-
-# 🔹 Add Hourly Rundown (Only PIT Bosses)
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def add_hourly_rundown(request):
-    if request.user.role != 'pit_boss':
-        return Response({"error": "Permission denied"}, status=403)
-
-    table_id = request.data.get("table_id")
-    float_amount = request.data.get("float_amount")
-    drop_amount = request.data.get("drop_amount")
-
-    try:
-        table = Table.objects.get(id=table_id)
-        rundown = HourlyRundown.objects.create(
-            table=table,
-            float_amount=float(float_amount),
-            drop_amount=float(drop_amount),
-            entered_by=request.user
-        )
-        rundown.calculate_profit_loss()  # Update Profit/Loss
-        return Response({"message": "Hourly Rundown added successfully", "data": {
-            "table": table.name,
-            "float_amount": rundown.float_amount,
-            "drop_amount": rundown.drop_amount,
-            "profit_loss": rundown.profit_loss
-        }}, status=201)
-    except Table.DoesNotExist:
-        return Response({"error": "Table not found"}, status=404)
-
-# 🔹 Get Real-Time Rundowns (Supervisors)
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def get_rundowns(request):
-    if request.user.role != 'supervisor':
-        return Response({"error": "Permission denied"}, status=403)
-
-    rundowns = HourlyRundown.objects.all().order_by('-timestamp')  # Latest first
-    data = [{
-        "table": rundown.table.name,
-        "timestamp": rundown.timestamp.strftime('%Y-%m-%d %H:%M'),
-        "float_amount": rundown.float_amount,
-        "drop_amount": rundown.drop_amount,
-        "profit_loss": rundown.profit_loss,
-        "entered_by": rundown.entered_by.username
-    } for rundown in rundowns]
-
-    return Response({"rundowns": data}, status=200)
-
+    def perform_create(self, serializer):
+        rundown = serializer.save(entered_by=self.request.user)
+        rundown.calculate_profit_loss()
+        return Response(HourlyRundownSerializer(rundown).data)

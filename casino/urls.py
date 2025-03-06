@@ -1,12 +1,15 @@
-from django.urls import path
-from .views import create_pit, create_table, add_player, add_hourly_rundown, get_rundowns, update_player_funds
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from .views import PitViewSet, TableViewSet, PlayerViewSet, HourlyRundownViewSet
+
+# 🔹 Create a Router for ViewSets
+router = DefaultRouter()
+router.register(r'pits', PitViewSet, basename='pit')
+router.register(r'tables', TableViewSet, basename='table')
+router.register(r'players', PlayerViewSet, basename='player')
+router.register(r'rundowns', HourlyRundownViewSet, basename='rundown')
 
 urlpatterns = [
-    path('pits/create/', create_pit),  # Supervisor-only
-    path('tables/create/', create_table),  # Supervisor-only
-    path('players/add/', add_player),  # PIT Boss-only
-    path('players/update/<int:player_id>/', update_player_funds),  # PIT Boss-only
-    path('rundowns/add/', add_hourly_rundown),  # PIT Boss-only
-    path('rundowns/view/', get_rundowns),  # Supervisor-only
+    path('', include(router.urls)),  # Auto-generates endpoints
 ]
 
